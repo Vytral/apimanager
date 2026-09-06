@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# apimanager uninstaller — https://github.com/vytral/apimanager
+# apimanager uninstaller — https://github.com/Vytral/apimanager
 #
 #   ./uninstall.sh            # keep providers + shell backups
 #   ./uninstall.sh --purge    # also delete ~/.config/api-manager.json

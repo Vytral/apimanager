@@ -32,13 +32,13 @@ api
 One-liner:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vytral/apimanager/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Vytral/apimanager/main/install.sh | bash
 ```
 
 Or manually:
 
 ```bash
-git clone https://github.com/vytral/apimanager.git
+git clone https://github.com/Vytral/apimanager.git
 cd apimanager
 ./install.sh
 ```

@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# apimanager installer — https://github.com/vytral/apimanager
+# apimanager installer — https://github.com/Vytral/apimanager
 #
 # One-liner:
-#   curl -fsSL https://raw.githubusercontent.com/vytral/apimanager/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Vytral/apimanager/main/install.sh | bash
 #
 # Or from a clone:
-#   git clone https://github.com/vytral/apimanager.git && cd apimanager && ./install.sh
+#   git clone https://github.com/Vytral/apimanager.git && cd apimanager && ./install.sh
 #
 set -euo pipefail
 
-REPO_URL="https://github.com/vytral/apimanager"
+REPO_URL="https://github.com/Vytral/apimanager"
 APP_DIR="$HOME/.local/share/api-manager"
 BIN_DIR="$HOME/.local/bin"
 BIN_PATH="$BIN_DIR/api-manager"
@@ -102,7 +102,7 @@ add_api_fn() {
     cp "$rc" "$rc.bak-$(date +%Y%m%d%H%M%S)"
     {
         echo ""
-        echo "# >>> apimanager >>> (https://github.com/vytral/apimanager)"
+        echo "# >>> apimanager >>> (https://github.com/Vytral/apimanager)"
         printf 'api() {\n    "$HOME/.local/bin/api-manager"\n    source %s\n}\n' "$src_cmd"
         echo "# <<< apimanager <<<"
         case ":$PATH:" in
