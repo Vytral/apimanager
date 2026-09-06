@@ -1,6 +1,6 @@
 {
   "name": "apimanager",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Switch between Claude/Anthropic-compatible API providers from your terminal with a single command.",
   "type": "module",
   "main": "src/index.js",

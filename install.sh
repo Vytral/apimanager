@@ -87,6 +87,8 @@ fi
 chmod 600 "$CONFIG_FILE" 2>/dev/null || true
 
 # --- 5. Shell integration -----------------------------------------------------
+# Detects the login shell and installs api() into its rc file first,
+# then into the other one if it exists (users with both get both).
 API_FN='api() {
     "$HOME/.local/bin/api-manager"
     source ~/.zshrc
@@ -113,15 +115,25 @@ add_api_fn() {
     ok "Added api() to $rc (backup kept next to it)"
 }
 
-[ -f "$HOME/.zshrc" ] || touch "$HOME/.zshrc"
-add_api_fn "$HOME/.zshrc" "~/.zshrc"
-[ -f "$HOME/.bashrc" ] && add_api_fn "$HOME/.bashrc" "~/.bashrc"
+LOGIN_SHELL="$(basename "${SHELL:-/bin/zsh}")"
+PRIMARY_RC="$HOME/.zshrc"
+PRIMARY_SRC="~/.zshrc"
+if [ "$LOGIN_SHELL" = "bash" ]; then
+    PRIMARY_RC="$HOME/.bashrc"
+    PRIMARY_SRC="~/.bashrc"
+fi
+info "Detected login shell: $LOGIN_SHELL"
+
+[ -f "$PRIMARY_RC" ] || touch "$PRIMARY_RC"
+add_api_fn "$PRIMARY_RC" "$PRIMARY_SRC"
+[ "$PRIMARY_RC" != "$HOME/.zshrc" ] && [ -f "$HOME/.zshrc" ] && add_api_fn "$HOME/.zshrc" "~/.zshrc"
+[ "$PRIMARY_RC" != "$HOME/.bashrc" ] && [ -f "$HOME/.bashrc" ] && add_api_fn "$HOME/.bashrc" "~/.bashrc"
 
 # --- 6. Cleanup ----------------------------------------------------------------
 [ -n "$CLEANUP_SRC" ] && rm -rf "$CLEANUP_SRC"
 
 echo ""
-ok "Done. Restart your terminal (or run: source ~/.zshrc), then type:"
+ok "Done (shell: $LOGIN_SHELL). Restart your terminal (or run: source $PRIMARY_SRC), then type:"
 echo ""
 echo "    api"
 echo ""

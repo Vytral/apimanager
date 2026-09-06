@@ -1,11 +1,42 @@
 import inquirer from 'inquirer';
 import autocomplete, { Separator as AutoSeparator } from 'inquirer-autocomplete-standalone';
+import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
-const ZSHRC = path.join(os.homedir(), '.zshrc');
 const CONFIG_FILE = path.join(os.homedir(), '.config/api-manager.json');
+
+// --- Shell detection --------------------------------------------------------
+// Figures out which shell launched us so env vars land in the right rc file.
+// Override with API_MANAGER_SHELL=zsh|bash. Falls back to $SHELL, then zsh.
+function shellNameFromComm(comm) {
+    const c = (comm || '').toLowerCase().replace(/^-/, '');
+    if (c.includes('zsh')) return 'zsh';
+    if (c.includes('bash')) return 'bash';
+    return null;
+}
+
+function detectShell() {
+    const forced = (process.env.API_MANAGER_SHELL || '').trim().toLowerCase();
+    if (forced === 'zsh' || forced === 'bash') return forced;
+    try {
+        const parent = execSync(`ps -p ${process.ppid} -o comm=`, {
+            encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore']
+        }).trim();
+        const fromParent = shellNameFromComm(path.basename(parent));
+        if (fromParent) return fromParent;
+    } catch { /* fall through to $SHELL */ }
+    return shellNameFromComm(path.basename(process.env.SHELL || '')) || 'zsh';
+}
+
+function rcFileFor(shell) {
+    return path.join(os.homedir(), shell === 'bash' ? '.bashrc' : '.zshrc');
+}
+
+const SHELL = detectShell();
+const RC_FILE = rcFileFor(SHELL);
+const RC_SHORT = `~/${path.basename(RC_FILE)}`;
 
 // Ensure the JSON store exists
 if (!fs.existsSync(path.dirname(CONFIG_FILE))) fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
@@ -40,10 +71,11 @@ function parseExport(content, name) {
     return v;
 }
 
-// Detects the active profile by reading .zshrc (token+url, to disambiguate)
+// Detects the active profile by reading the current shell's rc file
+// (token+url, to disambiguate)
 function getActiveProfile(config) {
-    if (!fs.existsSync(ZSHRC)) return 'None';
-    const content = fs.readFileSync(ZSHRC, 'utf-8');
+    if (!fs.existsSync(RC_FILE)) return 'None';
+    const content = fs.readFileSync(RC_FILE, 'utf-8');
     const currentToken = parseExport(content, 'ANTHROPIC_AUTH_TOKEN');
     const currentUrl = parseExport(content, 'ANTHROPIC_BASE_URL');
     if (!currentToken) return 'None';
@@ -53,8 +85,8 @@ function getActiveProfile(config) {
     ) || 'None';
 }
 
-function applyToZshrc(token, url) {
-    let content = fs.existsSync(ZSHRC) ? fs.readFileSync(ZSHRC, 'utf-8') : '';
+function applyToShell(token, url) {
+    let content = fs.existsSync(RC_FILE) ? fs.readFileSync(RC_FILE, 'utf-8') : '';
     // Filter out old lines (robust to leading whitespace)
     content = content.split('\n')
         .filter(line => {
@@ -65,7 +97,8 @@ function applyToZshrc(token, url) {
 
     // Append new values with safe quoting
     content += `\nexport ANTHROPIC_AUTH_TOKEN=${zshQuote(token)}\nexport ANTHROPIC_BASE_URL=${zshQuote(url)}\n`;
-    fs.writeFileSync(ZSHRC, content.trim() + '\n');
+    fs.writeFileSync(RC_FILE, content.trim() + '\n');
+    try { fs.chmodSync(RC_FILE, 0o600); } catch { /* best effort */ }
 }
 
 function pageSizeFor(n) {
@@ -128,7 +161,7 @@ async function manageProviders() {
         saveConfig(config);
 
         // Auto-activate the new/edited entry: no need to go find it in the list
-        applyToZshrc(config[name].token, config[name].url);
+        applyToShell(config[name].token, config[name].url);
         console.log(`\n✅ Provider "${name}" saved and activated.`);
         return name;
     }
@@ -159,7 +192,7 @@ async function main() {
     while (true) {
         console.clear();
         console.log('Select provider');
-        console.log('Switch between Anthropic/Claude API environments. Your pick updates ~/.zshrc instantly.\n');
+        console.log('Switch between Anthropic/Claude API environments. Your pick updates your shell config instantly.\n');
 
         const config = getConfig();
         const active = getActiveProfile(config);
@@ -171,7 +204,7 @@ async function main() {
             continue;
         }
 
-        console.log(`Active: ${active} (${keys.length} providers)\n`);
+        console.log(`Active: ${active} (${keys.length} providers · ${SHELL} → ${RC_SHORT})\n`);
 
         // Web-style search: list always visible, narrows as you type.
         // Empty input: Manage/Exit on top. Typing: best matches first so the
@@ -233,8 +266,8 @@ async function main() {
         }
         const target = config[selected];
         if (!target) continue;
-        applyToZshrc(target.token, target.url);
-        console.log(`\n🚀 Active profile set to: ${selected}`);
+        applyToShell(target.token, target.url);
+        console.log(`\n🚀 Active profile set to: ${selected} (${RC_SHORT} updated)`);
         break;
     }
 }

@@ -23,7 +23,8 @@ api
 - ⚙️ **Provider CRUD** — add, edit, and bulk-delete providers without touching config files
 - ⚡ **Instant activation** — new or edited providers are activated immediately, no re-searching the list
 - ✔️ **Active-profile detection** — reads your shell config and marks the current provider
-- 🛡️ **Injection-safe writes** — tokens are shell-quoted before touching `~/.zshrc`, with validation against empty values
+- 🐚 **Shell-aware** — detects whether you run zsh or bash and updates the right rc file (`API_MANAGER_SHELL` overrides)
+- 🛡️ **Injection-safe writes** — tokens are shell-quoted before touching your rc file, with validation against empty values
 
 ## Requirements
 
@@ -64,7 +65,7 @@ api
 
 - **Empty input** shows every provider, with `Manage Providers` and `Cancel & Exit` on top.
 - **Type to filter** by name or URL (`free`, `tabi`, `openrouter`…). Matches move to the top with the closest one highlighted; management actions stay available below the list.
-- **Enter** activates the highlighted provider — `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL` are updated in `~/.zshrc` instantly (the `api()` wrapper re-sources it for you).
+- **Enter** activates the highlighted provider — `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL` are updated in your shell's rc file instantly (the `api()` wrapper re-sources it for you).
 - **Manage Providers → Add new provider**: enter the base URL first, then the auth token. The new provider is saved *and* activated right away.
 - **Manage Providers → Delete**: multi-select with `space`, confirm with `enter`.
 
@@ -75,12 +76,12 @@ api
 | `~/.local/share/api-manager/` | App code + dependencies |
 | `~/.local/bin/api-manager` | Launcher |
 | `~/.config/api-manager.json` | Your providers (`{ "name": { "token", "url" } }`) |
-| `~/.zshrc` | Receives the active `ANTHROPIC_*` exports + `api()` |
+| `~/.zshrc` or `~/.bashrc` | Receives the active `ANTHROPIC_*` exports + `api()` (auto-detected) |
 
 ## Security notes
 
-- Tokens are stored in plaintext in `~/.config/api-manager.json` and exported in `~/.zshrc` (mode `600` is enforced on the JSON store). This tool is designed for a **personal machine** — do not commit these files or copy them to shared hosts.
-- Values written to `~/.zshrc` are single-quote escaped, so special characters (`"`, `$`, backticks…) can't break or inject into your shell.
+- Tokens are stored in plaintext in `~/.config/api-manager.json` and exported in your rc file (mode `600` is enforced on both). This tool is designed for a **personal machine** — do not commit these files or copy them to shared hosts.
+- Values written to your rc file are single-quote escaped, so special characters (`"`, `$`, backticks…) can't break or inject into your shell.
 
 ## Uninstall
 
