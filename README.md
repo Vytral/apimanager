@@ -61,6 +61,13 @@ cd apimanager
 ./install.sh
 ```
 
+Or with Homebrew (macOS):
+
+```bash
+brew tap Vytral/tap
+brew install apimanager
+```
+
 The installer:
 
 1. Copies the app to `~/.local/share/api-manager` and the launcher to `~/.local/bin/api-manager`
