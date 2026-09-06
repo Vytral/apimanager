@@ -88,7 +88,7 @@ fi
 # --- 3. Install app files -----------------------------------------------------
 info "Installing to $APP_DIR ..."
 mkdir -p "$APP_DIR/src" "$BIN_DIR"
-cp "$SRC_DIR/src/index.js" "$APP_DIR/src/index.js"
+cp "$SRC_DIR/src/"*.js "$APP_DIR/src/"
 cp "$SRC_DIR/package.json" "$APP_DIR/package.json"
 [ -f "$SRC_DIR/package-lock.json" ] && cp "$SRC_DIR/package-lock.json" "$APP_DIR/package-lock.json"
 
