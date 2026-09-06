@@ -4,6 +4,10 @@
 
 <h1 align="center">API Manager</h1>
 
+<p align="center">
+  <img src="https://github.com/Vytral/apimanager/actions/workflows/ci.yml/badge.svg" alt="CI" />
+</p>
+
 **Switch between Claude / Anthropic-compatible API providers with a single command.**
 
 Managing Claude endpoints by hand is a pain: every time you want to change providers you have to open your shell config, hunt down `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_BASE_URL`, paste a new key and URL, save, reload — and hope you didn't break anything. Do that a few times a day across a dozen providers and it becomes pure toil.

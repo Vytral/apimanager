@@ -1,154 +1,21 @@
 import inquirer from 'inquirer';
 import autocomplete, { Separator as AutoSeparator } from 'inquirer-autocomplete-standalone';
-import { execSync } from 'child_process';
 import fs from 'fs';
-import path from 'path';
-import os from 'os';
+import {
+    ensureConfigFile,
+    getConfig,
+    saveConfig,
+    SHELL,
+    RC_SHORT,
+    getActiveProfile,
+    applyToShell,
+    resolveProvider,
+    mergeProviders,
+    pageSizeFor,
+    notEmpty,
+} from './lib.js';
 
-const CONFIG_FILE = path.join(os.homedir(), '.config/api-manager.json');
-
-// --- Shell detection --------------------------------------------------------
-// Figures out which shell launched us so env vars land in the right rc file.
-// Override with API_MANAGER_SHELL=zsh|bash|fish. Falls back to $SHELL, then zsh.
-function shellNameFromComm(comm) {
-    const c = (comm || '').toLowerCase().replace(/^-/, '');
-    if (c.includes('zsh')) return 'zsh';
-    if (c.includes('bash')) return 'bash';
-    if (c.includes('fish')) return 'fish';
-    return null;
-}
-
-function detectShell() {
-    const forced = (process.env.API_MANAGER_SHELL || '').trim().toLowerCase();
-    if (forced === 'zsh' || forced === 'bash' || forced === 'fish') return forced;
-    try {
-        const parent = execSync(`ps -p ${process.ppid} -o comm=`, {
-            encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore']
-        }).trim();
-        const fromParent = shellNameFromComm(path.basename(parent));
-        if (fromParent) return fromParent;
-    } catch { /* fall through to $SHELL */ }
-    return shellNameFromComm(path.basename(process.env.SHELL || '')) || 'zsh';
-}
-
-function rcFileFor(shell) {
-    if (shell === 'bash') return path.join(os.homedir(), '.bashrc');
-    if (shell === 'fish') return path.join(os.homedir(), '.config/fish/config.fish');
-    return path.join(os.homedir(), '.zshrc');
-}
-
-const SHELL = detectShell();
-const RC_FILE = rcFileFor(SHELL);
-const RC_SHORT = `~/${path.relative(os.homedir(), RC_FILE)}`;
-
-// Ensure the JSON store exists
-if (!fs.existsSync(path.dirname(CONFIG_FILE))) fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
-if (!fs.existsSync(CONFIG_FILE)) fs.writeFileSync(CONFIG_FILE, '{}');
-
-const getConfig = () => {
-    try {
-        return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-    } catch {
-        return {};
-    }
-};
-const saveConfig = (data) => {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(data, null, 4));
-    try { fs.chmodSync(CONFIG_FILE, 0o600); } catch { /* best effort */ }
-};
-
-// Safe quoting for sh-style shells: single-quote, escaping ' as '\''
-// Prevents injection via ", $, `, \, !, etc.
-function zshQuote(s) {
-    return "'" + String(s).replace(/'/g, "'\\''") + "'";
-}
-
-// Safe quoting for fish: inside single quotes, escape \ and ' with backslash
-function fishQuote(s) {
-    return "'" + String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
-}
-
-function unquoteSh(v) {
-    v = v.trim();
-    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
-        v = v.slice(1, -1);
-        // un-escape the '\'' sequence produced by zshQuote
-        if (v.includes("'\\''")) v = v.split("'\\''").join("'");
-    }
-    return v;
-}
-
-function unquoteFish(v) {
-    v = v.trim();
-    if (v.startsWith("'") && v.endsWith("'") && v.length >= 2) {
-        return v.slice(1, -1).replace(/\\'/g, "'").replace(/\\\\/g, '\\');
-    }
-    if (v.startsWith('"') && v.endsWith('"') && v.length >= 2) {
-        return v.slice(1, -1);
-    }
-    return v;
-}
-
-// Reads a value whether the rc file uses sh-style (export X=...)
-// or fish-style (set -gx/-Ux X ...) syntax
-function parseExport(content, name) {
-    const sh = content.match(new RegExp(`^\\s*export\\s+${name}\\s*=\\s*(.+?)\\s*$`, 'm'));
-    if (sh) return unquoteSh(sh[1]);
-    const fish = content.match(new RegExp(`^\\s*set\\s+(?:-\\w+\\s+)*${name}\\s+(.+?)\\s*$`, 'm'));
-    if (fish) return unquoteFish(fish[1]);
-    return null;
-}
-
-// Detects the active profile by reading the current shell's rc file
-// (token+url, to disambiguate)
-function getActiveProfile(config) {
-    if (!fs.existsSync(RC_FILE)) return 'None';
-    const content = fs.readFileSync(RC_FILE, 'utf-8');
-    const currentToken = parseExport(content, 'ANTHROPIC_AUTH_TOKEN');
-    const currentUrl = parseExport(content, 'ANTHROPIC_BASE_URL');
-    if (!currentToken) return 'None';
-    return Object.keys(config).find(k =>
-        config[k].token === currentToken &&
-        (currentUrl == null || config[k].url === currentUrl)
-    ) || 'None';
-}
-
-function isAnthropicLine(t, name) {
-    // sh-style: export NAME=... | fish-style: set ... NAME ...
-    if (t.startsWith(`export ${name}=`) || t.startsWith(`export ${name} =`)) return true;
-    return t.startsWith('set ') && new RegExp(`^set\\s+(?:-\\w+\\s+)*${name}(\\s|$)`).test(t);
-}
-
-function applyToShell(token, url) {
-    if (!fs.existsSync(path.dirname(RC_FILE))) fs.mkdirSync(path.dirname(RC_FILE), { recursive: true });
-    let content = fs.existsSync(RC_FILE) ? fs.readFileSync(RC_FILE, 'utf-8') : '';
-    // Filter out old lines (robust to leading whitespace)
-    content = content.split('\n')
-        .filter(line => {
-            const t = line.trimStart();
-            return !isAnthropicLine(t, 'ANTHROPIC_AUTH_TOKEN') && !isAnthropicLine(t, 'ANTHROPIC_BASE_URL');
-        })
-        .join('\n');
-
-    // Append new values with safe quoting for the detected shell.
-    // Note: fish uses `set -gx` in config.fish (a child process cannot set
-    // the parent's universal `set -Ux` vars, this is the equivalent).
-    if (SHELL === 'fish') {
-        content += `\nset -gx ANTHROPIC_AUTH_TOKEN ${fishQuote(token)}\nset -gx ANTHROPIC_BASE_URL ${fishQuote(url)}\n`;
-    } else {
-        content += `\nexport ANTHROPIC_AUTH_TOKEN=${zshQuote(token)}\nexport ANTHROPIC_BASE_URL=${zshQuote(url)}\n`;
-    }
-    fs.writeFileSync(RC_FILE, content.trim() + '\n');
-    try { fs.chmodSync(RC_FILE, 0o600); } catch { /* best effort */ }
-}
-
-function pageSizeFor(n) {
-    const rows = process.stdout.rows || 30;
-    // fill almost the whole screen
-    return Math.max(12, Math.min(n, rows - 4, 30));
-}
-
-const notEmpty = (input) => (input && input.trim() ? true : 'Cannot be empty');
+ensureConfigFile();
 
 async function manageProviders() {
     const { action } = await inquirer.prompt([{
@@ -332,23 +199,16 @@ Env:
 `);
 }
 
-function resolveProvider(config, name) {
-    const keys = Object.keys(config);
-    if (config[name]) return name;
-    const ci = keys.filter(k => k.toLowerCase() === String(name).toLowerCase());
-    if (ci.length === 1) return ci[0];
-    if (ci.length > 1) {
-        console.error(`Ambiguous name "${name}", matches: ${ci.join(', ')}`);
-        process.exit(1);
-    }
-    console.error(`Unknown provider "${name}". Run "api list" to see available ones.`);
-    process.exit(1);
-}
-
 function cmdUse(name) {
     if (!name) { console.error('Usage: api use <name>'); process.exit(1); }
     const config = getConfig();
-    const key = resolveProvider(config, name);
+    let key;
+    try {
+        key = resolveProvider(config, name);
+    } catch (err) {
+        console.error(err.message);
+        process.exit(1);
+    }
     applyToShell(config[key].token, config[key].url);
     console.log(`Active profile set to: ${key} (${RC_SHORT} updated)`);
 }
@@ -390,21 +250,15 @@ async function cmdImport(file) {
         console.error('Invalid JSON');
         process.exit(1);
     }
-    if (!data || typeof data !== 'object' || Array.isArray(data)) {
-        console.error('Invalid format: expected { "name": { "token": "...", "url": "..." } }');
+    let merged;
+    try {
+        merged = mergeProviders(getConfig(), data);
+    } catch (err) {
+        console.error(err.message);
         process.exit(1);
     }
-    const config = getConfig();
-    let added = 0, updated = 0, skipped = 0;
-    for (const [name, entry] of Object.entries(data)) {
-        const token = entry && typeof entry.token === 'string' ? entry.token.trim() : '';
-        const url = entry && typeof entry.url === 'string' ? entry.url.trim() : '';
-        if (!name || !token || !url) { skipped++; continue; }
-        if (config[name]) updated++; else added++;
-        config[name] = { token, url };
-    }
-    saveConfig(config);
-    console.log(`Imported: ${added} added, ${updated} updated, ${skipped} skipped.`);
+    saveConfig(merged.config);
+    console.log(`Imported: ${merged.added} added, ${merged.updated} updated, ${merged.skipped} skipped.`);
 }
 
 async function dispatch(argv) {
