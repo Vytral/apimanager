@@ -23,14 +23,16 @@ api
 - ⚙️ **Provider CRUD** — add, edit, and bulk-delete providers without touching config files
 - ⚡ **Instant activation** — new or edited providers are activated immediately, no re-searching the list
 - ✔️ **Active-profile detection** — reads your shell config and marks the current provider
-- 🐚 **Shell-aware** — detects whether you run zsh or bash and updates the right rc file (`API_MANAGER_SHELL` overrides)
+- 🐚 **Shell-aware** — detects zsh, bash, or fish and updates the right rc file (`API_MANAGER_SHELL` overrides)
+- ⌨️ **Scriptable CLI** — `api use <name>`, `api list`, `api current` for aliases and scripts, no picker needed
+- 📦 **Import/export** — move providers between machines with `api export` / `api import`
 - 🛡️ **Injection-safe writes** — tokens are shell-quoted before touching your rc file, with validation against empty values
 
 ## Requirements
 
 - macOS or Linux
 - Node.js 18+ (`node -v`)
-- zsh (primary) or bash
+- zsh, bash, or fish
 
 ## Install
 
@@ -53,11 +55,15 @@ The installer:
 1. Copies the app to `~/.local/share/api-manager` and the launcher to `~/.local/bin/api-manager`
 2. Runs `npm install --omit=dev`
 3. Creates `~/.config/api-manager.json` if missing (mode `600`)
-4. Adds an `api()` function to `~/.zshrc` (and `~/.bashrc` if present), keeping a timestamped backup — existing setups are never overwritten, only extended
+4. Detects your login shell and adds an `api()` function to its rc file (plus the others if present), keeping a timestamped backup — existing setups are never overwritten, only extended
 
-Then restart your terminal (or `source ~/.zshrc`).
+Re-running the installer later detects the installed version and updates only when the repo is newer (`./install.sh --force` reinstalls regardless). Your providers are always kept.
+
+Then restart your terminal (or re-source your rc file).
 
 ## Usage
+
+### Interactive picker
 
 ```bash
 api
@@ -69,6 +75,19 @@ api
 - **Manage Providers → Add new provider**: enter the base URL first, then the auth token. The new provider is saved *and* activated right away.
 - **Manage Providers → Delete**: multi-select with `space`, confirm with `enter`.
 
+### Non-interactive (scripts & aliases)
+
+```bash
+api use freemodel        # activate without opening the picker
+api list                 # names + URLs (* marks the active one)
+api current              # print the active provider name
+api export > backup.json # dump providers JSON to stdout
+api import backup.json   # merge providers from a file (or: cat backup.json | api import)
+api help                 # usage
+```
+
+`api use` accepts the exact name or a unique case-insensitive match. After `api use`, re-source your rc file (the interactive `api()` wrapper does it for you).
+
 ### Files
 
 | Path | What |
@@ -76,7 +95,7 @@ api
 | `~/.local/share/api-manager/` | App code + dependencies |
 | `~/.local/bin/api-manager` | Launcher |
 | `~/.config/api-manager.json` | Your providers (`{ "name": { "token", "url" } }`) |
-| `~/.zshrc` or `~/.bashrc` | Receives the active `ANTHROPIC_*` exports + `api()` (auto-detected) |
+| `~/.zshrc`, `~/.bashrc` or `~/.config/fish/config.fish` | Receives the active `ANTHROPIC_*` values + `api()` (auto-detected; fish uses `set -gx`) |
 
 ## Security notes
 

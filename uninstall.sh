@@ -17,7 +17,7 @@ ok()   { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
 [ -x "$BIN_PATH" ] && rm -f "$BIN_PATH" && ok "Removed $BIN_PATH"
 [ -d "$APP_DIR" ] && rm -rf "$APP_DIR" && ok "Removed $APP_DIR"
 
-for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.config/fish/config.fish"; do
     if [ -f "$rc" ] && grep -q "# >>> apimanager >>>" "$rc" 2>/dev/null; then
         cp "$rc" "$rc.bak-$(date +%Y%m%d%H%M%S)"
         # delete everything between the markers (inclusive)

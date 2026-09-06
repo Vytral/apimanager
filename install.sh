@@ -55,6 +55,36 @@ else
     [ -f "$SRC_DIR/src/index.js" ] || fail "Downloaded archive looks invalid (src/index.js missing)."
 fi
 
+# --- 2b. Version check: fresh install vs update --------------------------------
+# Usage: ./install.sh [--force]
+FORCE=0
+[ "${1:-}" = "--force" ] && FORCE=1
+
+repo_ver() { node -p "require('$SRC_DIR/package.json').version" 2>/dev/null || echo "0.0.0"; }
+installed_ver() {
+    [ -f "$APP_DIR/package.json" ] \
+        && node -p "require('$APP_DIR/package.json').version" 2>/dev/null \
+        || echo "none"
+}
+
+REPO_VER="$(repo_ver)"
+INSTALLED_VER="$(installed_ver)"
+
+if [ "$INSTALLED_VER" != "none" ] && [ "$FORCE" -eq 0 ]; then
+    if [ "$INSTALLED_VER" = "$REPO_VER" ]; then
+        ok "Already installed and up to date (v$INSTALLED_VER at $APP_DIR). Use --force to reinstall."
+        exit 0
+    fi
+    NEWER="$(printf '%s\n%s\n' "$INSTALLED_VER" "$REPO_VER" | sort -V | tail -n 1)"
+    if [ "$NEWER" = "$INSTALLED_VER" ]; then
+        warn "Installed v$INSTALLED_VER is newer than repo v$REPO_VER — reinstalling anyway."
+    else
+        info "Updating v$INSTALLED_VER -> v$REPO_VER (your providers are kept)."
+    fi
+else
+    [ "$FORCE" -eq 1 ] && info "Force reinstall requested (v$INSTALLED_VER -> v$REPO_VER)."
+fi
+
 # --- 3. Install app files -----------------------------------------------------
 info "Installing to $APP_DIR ..."
 mkdir -p "$APP_DIR/src" "$BIN_DIR"
@@ -118,14 +148,45 @@ add_api_fn() {
 LOGIN_SHELL="$(basename "${SHELL:-/bin/zsh}")"
 PRIMARY_RC="$HOME/.zshrc"
 PRIMARY_SRC="~/.zshrc"
+PRIMARY_FISH=0
 if [ "$LOGIN_SHELL" = "bash" ]; then
     PRIMARY_RC="$HOME/.bashrc"
     PRIMARY_SRC="~/.bashrc"
+elif [ "$LOGIN_SHELL" = "fish" ]; then
+    PRIMARY_RC="$HOME/.config/fish/config.fish"
+    PRIMARY_SRC="~/.config/fish/config.fish"
+    PRIMARY_FISH=1
 fi
 info "Detected login shell: $LOGIN_SHELL"
 
-[ -f "$PRIMARY_RC" ] || touch "$PRIMARY_RC"
-add_api_fn "$PRIMARY_RC" "$PRIMARY_SRC"
+add_api_fn_fish() {
+    local rc="$1"
+    [ -f "$rc" ] || return 0
+    if grep -q "api-manager" "$rc" 2>/dev/null && grep -q "^function api" "$rc" 2>/dev/null; then
+        ok "api() already present in $rc"
+        return 0
+    fi
+    cp "$rc" "$rc.bak-$(date +%Y%m%d%H%M%S)"
+    {
+        echo ""
+        echo "# >>> apimanager >>> (https://github.com/Vytral/apimanager)"
+        echo "function api"
+        echo '    ~/.local/bin/api-manager $argv'
+        echo "    source ~/.config/fish/config.fish"
+        echo "end"
+        echo "# <<< apimanager <<<"
+    } >> "$rc"
+    ok "Added api() to $rc (backup kept next to it)"
+}
+
+if [ "$PRIMARY_FISH" -eq 1 ]; then
+    mkdir -p "$(dirname "$PRIMARY_RC")"
+    [ -f "$PRIMARY_RC" ] || touch "$PRIMARY_RC"
+    add_api_fn_fish "$PRIMARY_RC"
+else
+    [ -f "$PRIMARY_RC" ] || touch "$PRIMARY_RC"
+    add_api_fn "$PRIMARY_RC" "$PRIMARY_SRC"
+fi
 [ "$PRIMARY_RC" != "$HOME/.zshrc" ] && [ -f "$HOME/.zshrc" ] && add_api_fn "$HOME/.zshrc" "~/.zshrc"
 [ "$PRIMARY_RC" != "$HOME/.bashrc" ] && [ -f "$HOME/.bashrc" ] && add_api_fn "$HOME/.bashrc" "~/.bashrc"
 

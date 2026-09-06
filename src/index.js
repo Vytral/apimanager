@@ -9,17 +9,18 @@ const CONFIG_FILE = path.join(os.homedir(), '.config/api-manager.json');
 
 // --- Shell detection --------------------------------------------------------
 // Figures out which shell launched us so env vars land in the right rc file.
-// Override with API_MANAGER_SHELL=zsh|bash. Falls back to $SHELL, then zsh.
+// Override with API_MANAGER_SHELL=zsh|bash|fish. Falls back to $SHELL, then zsh.
 function shellNameFromComm(comm) {
     const c = (comm || '').toLowerCase().replace(/^-/, '');
     if (c.includes('zsh')) return 'zsh';
     if (c.includes('bash')) return 'bash';
+    if (c.includes('fish')) return 'fish';
     return null;
 }
 
 function detectShell() {
     const forced = (process.env.API_MANAGER_SHELL || '').trim().toLowerCase();
-    if (forced === 'zsh' || forced === 'bash') return forced;
+    if (forced === 'zsh' || forced === 'bash' || forced === 'fish') return forced;
     try {
         const parent = execSync(`ps -p ${process.ppid} -o comm=`, {
             encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore']
@@ -31,12 +32,14 @@ function detectShell() {
 }
 
 function rcFileFor(shell) {
-    return path.join(os.homedir(), shell === 'bash' ? '.bashrc' : '.zshrc');
+    if (shell === 'bash') return path.join(os.homedir(), '.bashrc');
+    if (shell === 'fish') return path.join(os.homedir(), '.config/fish/config.fish');
+    return path.join(os.homedir(), '.zshrc');
 }
 
 const SHELL = detectShell();
 const RC_FILE = rcFileFor(SHELL);
-const RC_SHORT = `~/${path.basename(RC_FILE)}`;
+const RC_SHORT = `~/${path.relative(os.homedir(), RC_FILE)}`;
 
 // Ensure the JSON store exists
 if (!fs.existsSync(path.dirname(CONFIG_FILE))) fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
@@ -49,26 +52,51 @@ const getConfig = () => {
         return {};
     }
 };
-const saveConfig = (data) => fs.writeFileSync(CONFIG_FILE, JSON.stringify(data, null, 4));
+const saveConfig = (data) => {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(data, null, 4));
+    try { fs.chmodSync(CONFIG_FILE, 0o600); } catch { /* best effort */ }
+};
 
-// Safe quoting for zsh: single-quote, escaping ' as '\''
+// Safe quoting for sh-style shells: single-quote, escaping ' as '\''
 // Prevents injection via ", $, `, \, !, etc.
 function zshQuote(s) {
     return "'" + String(s).replace(/'/g, "'\\''") + "'";
 }
 
-// Reads an export value whether it uses " or ' quotes or extra whitespace
-function parseExport(content, name) {
-    const m = content.match(new RegExp(`export\\s+${name}\\s*=\\s*(.*)`));
-    if (!m) return null;
-    let v = m[1].trim();
-    // strip surrounding quotes if present
+// Safe quoting for fish: inside single quotes, escape \ and ' with backslash
+function fishQuote(s) {
+    return "'" + String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'";
+}
+
+function unquoteSh(v) {
+    v = v.trim();
     if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
         v = v.slice(1, -1);
         // un-escape the '\'' sequence produced by zshQuote
         if (v.includes("'\\''")) v = v.split("'\\''").join("'");
     }
     return v;
+}
+
+function unquoteFish(v) {
+    v = v.trim();
+    if (v.startsWith("'") && v.endsWith("'") && v.length >= 2) {
+        return v.slice(1, -1).replace(/\\'/g, "'").replace(/\\\\/g, '\\');
+    }
+    if (v.startsWith('"') && v.endsWith('"') && v.length >= 2) {
+        return v.slice(1, -1);
+    }
+    return v;
+}
+
+// Reads a value whether the rc file uses sh-style (export X=...)
+// or fish-style (set -gx/-Ux X ...) syntax
+function parseExport(content, name) {
+    const sh = content.match(new RegExp(`^\\s*export\\s+${name}\\s*=\\s*(.+?)\\s*$`, 'm'));
+    if (sh) return unquoteSh(sh[1]);
+    const fish = content.match(new RegExp(`^\\s*set\\s+(?:-\\w+\\s+)*${name}\\s+(.+?)\\s*$`, 'm'));
+    if (fish) return unquoteFish(fish[1]);
+    return null;
 }
 
 // Detects the active profile by reading the current shell's rc file
@@ -85,18 +113,31 @@ function getActiveProfile(config) {
     ) || 'None';
 }
 
+function isAnthropicLine(t, name) {
+    // sh-style: export NAME=... | fish-style: set ... NAME ...
+    if (t.startsWith(`export ${name}=`) || t.startsWith(`export ${name} =`)) return true;
+    return t.startsWith('set ') && new RegExp(`^set\\s+(?:-\\w+\\s+)*${name}(\\s|$)`).test(t);
+}
+
 function applyToShell(token, url) {
+    if (!fs.existsSync(path.dirname(RC_FILE))) fs.mkdirSync(path.dirname(RC_FILE), { recursive: true });
     let content = fs.existsSync(RC_FILE) ? fs.readFileSync(RC_FILE, 'utf-8') : '';
     // Filter out old lines (robust to leading whitespace)
     content = content.split('\n')
         .filter(line => {
             const t = line.trimStart();
-            return !t.startsWith('export ANTHROPIC_AUTH_TOKEN=') && !t.startsWith('export ANTHROPIC_BASE_URL=');
+            return !isAnthropicLine(t, 'ANTHROPIC_AUTH_TOKEN') && !isAnthropicLine(t, 'ANTHROPIC_BASE_URL');
         })
         .join('\n');
 
-    // Append new values with safe quoting
-    content += `\nexport ANTHROPIC_AUTH_TOKEN=${zshQuote(token)}\nexport ANTHROPIC_BASE_URL=${zshQuote(url)}\n`;
+    // Append new values with safe quoting for the detected shell.
+    // Note: fish uses `set -gx` in config.fish (a child process cannot set
+    // the parent's universal `set -Ux` vars, this is the equivalent).
+    if (SHELL === 'fish') {
+        content += `\nset -gx ANTHROPIC_AUTH_TOKEN ${fishQuote(token)}\nset -gx ANTHROPIC_BASE_URL ${fishQuote(url)}\n`;
+    } else {
+        content += `\nexport ANTHROPIC_AUTH_TOKEN=${zshQuote(token)}\nexport ANTHROPIC_BASE_URL=${zshQuote(url)}\n`;
+    }
     fs.writeFileSync(RC_FILE, content.trim() + '\n');
     try { fs.chmodSync(RC_FILE, 0o600); } catch { /* best effort */ }
 }
@@ -272,4 +313,118 @@ async function main() {
     }
 }
 
-main().catch(console.error);
+// --- Non-interactive CLI (scripting & aliases) -------------------------------
+
+function printHelp() {
+    console.log(`API Manager — switch Claude/Anthropic providers from the terminal
+
+Usage:
+  api                         Open the interactive picker
+  api use <name>              Activate a provider (exact, or unique case-insensitive match)
+  api list                    List providers (* marks the active one)
+  api current                 Print the active provider name
+  api export                  Print providers JSON to stdout (api export > backup.json)
+  api import [file]           Merge providers from a JSON file (or stdin pipe)
+  api help                    Show this help
+
+Env:
+  API_MANAGER_SHELL=zsh|bash|fish   Override shell detection
+`);
+}
+
+function resolveProvider(config, name) {
+    const keys = Object.keys(config);
+    if (config[name]) return name;
+    const ci = keys.filter(k => k.toLowerCase() === String(name).toLowerCase());
+    if (ci.length === 1) return ci[0];
+    if (ci.length > 1) {
+        console.error(`Ambiguous name "${name}", matches: ${ci.join(', ')}`);
+        process.exit(1);
+    }
+    console.error(`Unknown provider "${name}". Run "api list" to see available ones.`);
+    process.exit(1);
+}
+
+function cmdUse(name) {
+    if (!name) { console.error('Usage: api use <name>'); process.exit(1); }
+    const config = getConfig();
+    const key = resolveProvider(config, name);
+    applyToShell(config[key].token, config[key].url);
+    console.log(`Active profile set to: ${key} (${RC_SHORT} updated)`);
+}
+
+function cmdList() {
+    const config = getConfig();
+    const active = getActiveProfile(config);
+    for (const key of Object.keys(config)) {
+        console.log(`${key === active ? '*' : ' '} ${key} ${config[key].url}`);
+    }
+}
+
+function cmdCurrent() {
+    const active = getActiveProfile(getConfig());
+    if (active === 'None') { console.error('No active provider'); process.exit(1); }
+    console.log(active);
+}
+
+function cmdExport() {
+    // Pure JSON on stdout so `api export > backup.json` just works
+    console.log(JSON.stringify(getConfig(), null, 4));
+}
+
+async function cmdImport(file) {
+    let raw;
+    if (file) {
+        if (!fs.existsSync(file)) { console.error(`File not found: ${file}`); process.exit(1); }
+        raw = fs.readFileSync(file, 'utf-8');
+    } else if (!process.stdin.isTTY) {
+        raw = fs.readFileSync(0, 'utf-8');
+    } else {
+        console.error('Usage: api import <file>  (or pipe JSON via stdin)');
+        process.exit(1);
+    }
+    let data;
+    try {
+        data = JSON.parse(raw);
+    } catch {
+        console.error('Invalid JSON');
+        process.exit(1);
+    }
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        console.error('Invalid format: expected { "name": { "token": "...", "url": "..." } }');
+        process.exit(1);
+    }
+    const config = getConfig();
+    let added = 0, updated = 0, skipped = 0;
+    for (const [name, entry] of Object.entries(data)) {
+        const token = entry && typeof entry.token === 'string' ? entry.token.trim() : '';
+        const url = entry && typeof entry.url === 'string' ? entry.url.trim() : '';
+        if (!name || !token || !url) { skipped++; continue; }
+        if (config[name]) updated++; else added++;
+        config[name] = { token, url };
+    }
+    saveConfig(config);
+    console.log(`Imported: ${added} added, ${updated} updated, ${skipped} skipped.`);
+}
+
+async function dispatch(argv) {
+    const [cmd, ...rest] = argv;
+    switch ((cmd || '').toLowerCase()) {
+        case 'use': cmdUse(rest[0]); break;
+        case 'list': cmdList(); break;
+        case 'current': cmdCurrent(); break;
+        case 'export': cmdExport(); break;
+        case 'import': await cmdImport(rest[0]); break;
+        case 'help': case '--help': case '-h': printHelp(); break;
+        default:
+            console.error(`Unknown command "${cmd}". Run "api help".`);
+            process.exit(1);
+    }
+}
+
+const CLI_ARGS = process.argv.slice(2);
+if (CLI_ARGS.length > 0) {
+    dispatch(CLI_ARGS).catch(err => { console.error(err); process.exit(1); });
+} else {
+    main().catch(console.error);
+}
