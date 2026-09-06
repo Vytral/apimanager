@@ -6,11 +6,15 @@ import {
     getConfig,
     saveConfig,
     SHELL,
+    RC_FILE,
     RC_SHORT,
     getActiveProfile,
     applyToShell,
     resolveProvider,
     mergeProviders,
+    checkProvider,
+    doctorFindings,
+    parseExport,
     pageSizeFor,
     notEmpty,
 } from './lib.js';
@@ -192,6 +196,8 @@ Usage:
   api current                 Print the active provider name
   api export                  Print providers JSON to stdout (api export > backup.json)
   api import [file]           Merge providers from a JSON file (or stdin pipe)
+  api check [name]            Health-check a provider (default: active one)
+  api doctor                  Find hygiene issues and fix them interactively
   api help                    Show this help
 
 Env:
@@ -199,16 +205,19 @@ Env:
 `);
 }
 
-function cmdUse(name) {
-    if (!name) { console.error('Usage: api use <name>'); process.exit(1); }
-    const config = getConfig();
-    let key;
+function mustResolve(config, name) {
     try {
-        key = resolveProvider(config, name);
+        return resolveProvider(config, name);
     } catch (err) {
         console.error(err.message);
         process.exit(1);
     }
+}
+
+function cmdUse(name) {
+    if (!name) { console.error('Usage: api use <name>'); process.exit(1); }
+    const config = getConfig();
+    const key = mustResolve(config, name);
     applyToShell(config[key].token, config[key].url);
     console.log(`Active profile set to: ${key} (${RC_SHORT} updated)`);
 }
@@ -227,13 +236,108 @@ function cmdCurrent() {
     console.log(active);
 }
 
+async function cmdCheck(name) {
+    const config = getConfig();
+    let key;
+    if (name) {
+        key = mustResolve(config, name);
+    } else {
+        key = getActiveProfile(config);
+        if (key === 'None') { console.error('No active provider (pass a name or activate one first)'); process.exit(1); }
+    }
+    console.log(`Checking ${key} (${config[key].url}) ...`);
+    const r = await checkProvider(config[key]);
+    if (r.ok) {
+        console.log(`✅ ${key}: ${r.method} — ${r.detail} (${r.ms}ms)`);
+    } else {
+        console.error(`❌ ${key}: unreachable (${r.ms}ms) — last error: ${r.detail}`);
+        process.exit(1);
+    }
+}
+
 function cmdExport() {
     // Pure JSON on stdout so `api export > backup.json` just works
     console.log(JSON.stringify(getConfig(), null, 4));
 }
 
-async function cmdImport(file) {
-    let raw;
+async function cmdDoctor() {
+    let config = getConfig();
+    const active = getActiveProfile(config);
+    let rcToken = null;
+    try {
+        if (fs.existsSync(RC_FILE)) {
+            rcToken = parseExport(fs.readFileSync(RC_FILE, 'utf-8'), 'ANTHROPIC_AUTH_TOKEN');
+        }
+    } catch { /* unreadable rc: skip mismatch check */ }
+
+    const render = (findings) => {
+        console.log(`🩺 Found ${findings.length} issue(s) (active: ${active}):\n`);
+        findings.forEach((f, i) => console.log(`${i + 1}. ${f.title}\n   ${f.detail}`));
+        console.log('');
+    };
+
+    let findings = doctorFindings(config, { rcToken });
+    if (findings.length === 0) {
+        console.log(`✅ All good: ${Object.keys(config).length} providers, no issues.`);
+        return;
+    }
+    render(findings);
+
+    if (!process.stdin.isTTY || !process.stdout.isTTY) process.exit(1);
+
+    // Fix 1: duplicates — keep first of each group, delete the rest
+    const spare = doctorFindings(getConfig(), { rcToken })
+        .filter(f => f.type === 'duplicates')
+        .flatMap(f => f.providers.slice(1));
+    if (spare.length > 0) {
+        const { toDelete } = await inquirer.prompt([{
+            type: 'checkbox', name: 'toDelete',
+            message: `Delete ${spare.length} duplicate copie(s)? (keeps first of each group)`,
+            choices: spare.map(s => ({ name: s, value: s, checked: true })),
+            pageSize: pageSizeFor(spare.length), loop: false,
+        }]);
+        if (toDelete.length > 0) {
+            config = getConfig();
+            for (const k of toDelete) delete config[k];
+            saveConfig(config);
+            console.log(`🗑️  Deleted: ${toDelete.join(', ')}\n`);
+        }
+    }
+
+    // Fix 2: fragile docker-bridge IP → localhost (port/path preserved)
+    config = getConfig();
+    const dockers = [...new Set(
+        doctorFindings(config, { rcToken })
+            .filter(f => f.type === 'docker-ip')
+            .flatMap(f => f.providers)
+    )];
+    if (dockers.length > 0) {
+        const { fixem } = await inquirer.prompt([{
+            type: 'confirm', name: 'fixem',
+            message: `Rewrite 172.17.0.2 → localhost in ${dockers.length} provider(s)?`,
+            default: true,
+        }]);
+        if (fixem) {
+            config = getConfig();
+            for (const k of dockers) {
+                if (config[k]) config[k].url = String(config[k].url).replace('172.17.0.2', 'localhost');
+            }
+            saveConfig(config);
+            console.log(`🔧 Fixed: ${dockers.join(', ')}\n`);
+        }
+    }
+
+    config = getConfig();
+    findings = doctorFindings(config, { rcToken });
+    if (findings.length === 0) {
+        console.log(`✅ All fixed: ${Object.keys(config).length} providers, no issues.`);
+    } else {
+        render(findings);
+        process.exit(1);
+    }
+}
+
+async function cmdImport(file) {    let raw;
     if (file) {
         if (!fs.existsSync(file)) { console.error(`File not found: ${file}`); process.exit(1); }
         raw = fs.readFileSync(file, 'utf-8');
@@ -269,6 +373,8 @@ async function dispatch(argv) {
         case 'current': cmdCurrent(); break;
         case 'export': cmdExport(); break;
         case 'import': await cmdImport(rest[0]); break;
+        case 'check': await cmdCheck(rest[0]); break;
+        case 'doctor': await cmdDoctor(); break;
         case 'help': case '--help': case '-h': printHelp(); break;
         default:
             console.error(`Unknown command "${cmd}". Run "api help".`);

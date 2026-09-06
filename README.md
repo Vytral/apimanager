@@ -30,6 +30,7 @@ api
 - 🐚 **Shell-aware** — detects zsh, bash, or fish and updates the right rc file (`API_MANAGER_SHELL` overrides)
 - ⌨️ **Scriptable CLI** — `api use <name>`, `api list`, `api current` for aliases and scripts, no picker needed
 - 📦 **Import/export** — move providers between machines with `api export` / `api import`
+- 🩺 **Health-check & doctor** — `api check` pings an endpoint (`GET /v1/models`, `POST /v1/messages` fallback); `api doctor` finds duplicates and stale configs and fixes them with you
 - 🛡️ **Injection-safe writes** — tokens are shell-quoted before touching your rc file, with validation against empty values
 
 ## Requirements
@@ -44,6 +45,12 @@ One-liner:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Vytral/apimanager/main/install.sh | bash
+```
+
+Sourced one-liner (applies `api()` to your current shell immediately, no restart needed):
+
+```bash
+source <(curl -fsSL https://raw.githubusercontent.com/Vytral/apimanager/main/install.sh)
 ```
 
 Or manually:
@@ -85,8 +92,10 @@ api
 api use freemodel        # activate without opening the picker
 api list                 # names + URLs (* marks the active one)
 api current              # print the active provider name
-api export > backup.json # dump providers JSON to stdout
+api export > backup.json   # dump providers JSON to stdout
 api import backup.json   # merge providers from a file (or: cat backup.json | api import)
+api check [name]         # health-check a provider (default: active one)
+api doctor               # find duplicates/stale configs, fix interactively
 api help                 # usage
 ```
 

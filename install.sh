@@ -5,8 +5,13 @@
 # One-liner:
 #   curl -fsSL https://raw.githubusercontent.com/Vytral/apimanager/main/install.sh | bash
 #
+# Sourced one-liner (applies changes to your current shell immediately):
+#   source <(curl -fsSL https://raw.githubusercontent.com/Vytral/apimanager/main/install.sh)
+#
 # Or from a clone:
 #   git clone https://github.com/Vytral/apimanager.git && cd apimanager && ./install.sh
+#
+# Flags: --force (reinstall even if up to date)
 #
 set -euo pipefail
 
@@ -20,6 +25,14 @@ info()  { printf '\033[1;36m[api]\033[0m %s\n' "$*"; }
 ok()    { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
 warn()  { printf '\033[1;33m[warn]\033[0m %s\n' "$*"; }
 fail()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
+
+# Are we sourced? Only then can we source the user's rc into THIS shell.
+SOURCED=0
+if [ -n "${BASH_VERSION-}" ] && [ -n "${BASH_SOURCE-}" ] && [ "${BASH_SOURCE[0]}" != "$0" ]; then
+    SOURCED=1
+elif [ -n "${ZSH_VERSION-}" ]; then
+    case "${ZSH_EVAL_CONTEXT-}" in *file*) SOURCED=1 ;; esac
+fi
 
 # --- 1. Requirements ---------------------------------------------------------
 command -v node >/dev/null 2>&1 || fail "Node.js not found. Install Node 18+ first: https://nodejs.org"
@@ -56,9 +69,10 @@ else
 fi
 
 # --- 2b. Version check: fresh install vs update --------------------------------
-# Usage: ./install.sh [--force]
 FORCE=0
-[ "${1:-}" = "--force" ] && FORCE=1
+for arg in "$@"; do
+    [ "$arg" = "--force" ] && FORCE=1
+done
 
 repo_ver() { node -p "require('$SRC_DIR/package.json').version" 2>/dev/null || echo "0.0.0"; }
 installed_ver() {
@@ -73,7 +87,8 @@ INSTALLED_VER="$(installed_ver)"
 if [ "$INSTALLED_VER" != "none" ] && [ "$FORCE" -eq 0 ]; then
     if [ "$INSTALLED_VER" = "$REPO_VER" ]; then
         ok "Already installed and up to date (v$INSTALLED_VER at $APP_DIR). Use --force to reinstall."
-        exit 0
+        # shellcheck disable=SC2317
+        return 0 2>/dev/null || exit 0
     fi
     NEWER="$(printf '%s\n%s\n' "$INSTALLED_VER" "$REPO_VER" | sort -V | tail -n 1)"
     if [ "$NEWER" = "$INSTALLED_VER" ]; then
@@ -190,10 +205,18 @@ fi
 [ "$PRIMARY_RC" != "$HOME/.zshrc" ] && [ -f "$HOME/.zshrc" ] && add_api_fn "$HOME/.zshrc" "~/.zshrc"
 [ "$PRIMARY_RC" != "$HOME/.bashrc" ] && [ -f "$HOME/.bashrc" ] && add_api_fn "$HOME/.bashrc" "~/.bashrc"
 
-# --- 6. Cleanup ----------------------------------------------------------------
+# --- 6. Cleanup + apply ----------------------------------------------------------
 [ -n "$CLEANUP_SRC" ] && rm -rf "$CLEANUP_SRC"
 
 echo ""
+if [ "$SOURCED" -eq 1 ] && [ -f "$PRIMARY_RC" ]; then
+    # Sourced run: apply to THIS shell right away (drop strict mode first,
+    # user rc files aren't written for `set -eu`).
+    set +e +u
+    # shellcheck disable=SC1090
+    source "$PRIMARY_RC" && ok "Sourced $PRIMARY_SRC into your current shell — ready."
+    set -euo pipefail
+fi
 ok "Done (shell: $LOGIN_SHELL). Restart your terminal (or run: source $PRIMARY_SRC), then type:"
 echo ""
 echo "    api"

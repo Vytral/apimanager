@@ -17,6 +17,8 @@ import {
     applyToShell,
     resolveProvider,
     mergeProviders,
+    checkProvider,
+    doctorFindings,
     pageSizeFor,
     notEmpty,
     getConfig,
@@ -187,8 +189,103 @@ describe('config store', () => {
     });
 });
 
-describe('misc', () => {
-    it('pageSizeFor clamps to screen', () => {
+describe('checkProvider', () => {
+    const okModels = (data = [{ id: 'a' }, { id: 'b' }]) => async () => ({
+        ok: true, status: 200, json: async () => ({ data }),
+    });
+    const httpFail = (status = 401) => async () => ({ ok: false, status });
+    const okMessage = (text = 'ok') => async () => ({
+        ok: true, status: 200,
+        json: async () => ({ content: [{ type: 'text', text }] }),
+    });
+
+    it('bearer GET /v1/models wins first', async () => {
+        const calls = [];
+        const r = await checkProvider(
+            { token: 't', url: 'https://x.example/' },
+            { fetchFn: async (url, opts) => { calls.push([url, opts]); return okModels()(url, opts); } }
+        );
+        assert.equal(r.ok, true);
+        assert.match(r.method, /bearer/);
+        assert.match(r.detail, /2 models/);
+        assert.equal(calls[0][0], 'https://x.example/v1/models');
+        assert.equal(calls[0][1].headers.Authorization, 'Bearer t');
+        assert.equal(typeof r.ms, 'number');
+    });
+
+    it('falls back to x-api-key when bearer fails', async () => {
+        let n = 0;
+        const r = await checkProvider(
+            { token: 't', url: 'https://x.example' },
+            {
+                fetchFn: async (url, opts) => {
+                    n++;
+                    if (n === 1) return httpFail(401)(url, opts);
+                    assert.equal(opts.headers['x-api-key'], 't');
+                    return okModels([])(url, opts);
+                },
+            }
+        );
+        assert.equal(r.ok, true);
+        assert.match(r.method, /x-api-key/);
+    });
+
+    it('falls back to POST /v1/messages with the say-ok prompt', async () => {
+        let bodies = [];
+        const r = await checkProvider(
+            { token: 't', url: 'https://x.example' },
+            {
+                fetchFn: async (url, opts) => {
+                    if (url.endsWith('/v1/models')) return httpFail(404)(url, opts);
+                    assert.equal(url, 'https://x.example/v1/messages');
+                    bodies.push(JSON.parse(opts.body));
+                    return okMessage('ok')(url, opts);
+                },
+            }
+        );
+        assert.equal(r.ok, true);
+        assert.equal(r.method, 'POST /v1/messages');
+        assert.match(r.detail, /ok/);
+        assert.equal(bodies[0].messages[0].content, 'Say "ok" in one sentence. Nothing else.');
+        assert.ok(bodies[0].max_tokens <= 32);
+    });
+
+    it('reports unreachable when everything fails (never throws)', async () => {
+        const r = await checkProvider(
+            { token: 't', url: 'https://dead.example' },
+            { fetchFn: async () => { throw new Error('boom'); } }
+        );
+        assert.equal(r.ok, false);
+        assert.match(r.detail, /boom|HTTP/);
+    });
+});
+
+describe('doctorFindings', () => {
+    it('returns [] when clean', () => {
+        assert.deepEqual(doctorFindings({
+            a: { token: 't1', url: 'https://a.example' },
+        }, { rcToken: 't1' }), []);
+    });
+    it('spots duplicates, invalid, bad urls, docker ip, and unknown active', () => {
+        const findings = doctorFindings({
+            a: { token: 'same', url: 'https://x.example' },
+            b: { token: 'same', url: 'https://x.example' },
+            bad: { token: '', url: 'https://y.example' },
+            nou: { token: 't', url: 'notaurl' },
+            dock: { token: 't', url: 'http://172.17.0.2:20128' },
+        }, { rcToken: 'ghost' });
+        const types = findings.map(f => f.type).sort();
+        assert.deepEqual(types, ['active-missing', 'bad-url', 'docker-ip', 'duplicates', 'invalid']);
+        const dupes = findings.find(f => f.type === 'duplicates');
+        assert.deepEqual(dupes.providers, ['a', 'b']);
+    });
+    it('no active-missing when store is empty or token matches', () => {
+        assert.deepEqual(doctorFindings({}, { rcToken: 'ghost' }), []);
+        assert.deepEqual(doctorFindings({ a: { token: 't', url: 'https://a.example' } }, {}), []);
+    });
+});
+
+describe('misc', () => {    it('pageSizeFor clamps to screen', () => {
         assert.equal(pageSizeFor(100, 30), 26);
         assert.equal(pageSizeFor(5, 30), 12);
         assert.equal(pageSizeFor(20, 30), 20);

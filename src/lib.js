@@ -193,6 +193,147 @@ export function mergeProviders(config, data) {
     return { config: next, added, updated, skipped };
 }
 
+// --- Health-check -------------------------------------------------------------
+// GET {base}/v1/models (Bearer, then x-api-key fallback), then a minimal
+// POST {base}/v1/messages probe ("Say ok in one sentence").
+// fetchFn is injectable so tests run offline. Never throws: always resolves
+// { ok, ms, method, detail }.
+
+export async function checkProvider({ token, url }, { fetchFn = fetch, timeoutMs = 8000, model } = {}) {
+    const base = String(url).replace(/\/+$/, '');
+    const timed = async (fn) => {
+        const start = Date.now();
+        try {
+            return { ...(await fn()), ms: Date.now() - start };
+        } catch (err) {
+            return { ok: false, ms: Date.now() - start, detail: err && err.message ? err.message : String(err) };
+        }
+    };
+    const getModels = (headers) => fetchFn(`${base}/v1/models`, {
+        headers, signal: AbortSignal.timeout(timeoutMs),
+    }).then(async (res) => {
+        if (!res.ok) return { ok: false, detail: `HTTP ${res.status}` };
+        let count = null;
+        try {
+            const body = await res.json();
+            if (Array.isArray(body && body.data)) count = body.data.length;
+        } catch { /* non-JSON body: still reachable */ }
+        return { ok: true, detail: count == null ? 'reachable' : `${count} models` };
+    });
+
+    // 1) OpenAI-compatible bearer auth
+    let r = await timed(() => getModels({ Authorization: `Bearer ${token}` }));
+    if (r.ok) return { ...r, method: 'GET /v1/models (bearer)' };
+    // 2) Anthropic-style key auth
+    r = await timed(() => getModels({ 'x-api-key': token, 'anthropic-version': '2023-06-01' }));
+    if (r.ok) return { ...r, method: 'GET /v1/models (x-api-key)' };
+    // 3) Minimal chat probe
+    const probeModel = model || process.env.ANTHROPIC_MODEL || 'claude-3-5-sonnet-latest';
+    r = await timed(() => fetchFn(`${base}/v1/messages`, {
+        method: 'POST',
+        headers: {
+            'content-type': 'application/json',
+            'x-api-key': token,
+            'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+            model: probeModel,
+            max_tokens: 16,
+            messages: [{ role: 'user', content: 'Say "ok" in one sentence. Nothing else.' }],
+        }),
+        signal: AbortSignal.timeout(timeoutMs),
+    }).then(async (res) => {
+        if (!res.ok) return { ok: false, detail: `HTTP ${res.status}` };
+        let text = 'answered';
+        try {
+            const body = await res.json();
+            const block = body && body.content && body.content.find && body.content.find(b => b.type === 'text');
+            text = ((block && block.text) || 'answered').trim().split('\n')[0] || 'answered';
+        } catch { /* keep default */ }
+        return { ok: true, detail: `says: ${text}` };
+    }));
+    return { ...r, method: 'POST /v1/messages' };
+}
+
+// --- Doctor -------------------------------------------------------------------
+// Offline hygiene checks over the provider store. Pure & testable.
+// Returns [{ type, title, detail, providers }] — empty means all good.
+export function doctorFindings(config, { rcToken = null } = {}) {
+    const findings = [];
+    const keys = Object.keys(config);
+
+    // 1) exact duplicates (same token + url)
+    const groups = new Map();
+    for (const k of keys) {
+        const e = config[k] || {};
+        const sig = `${e.token || ''}\n${e.url || ''}`;
+        if (!groups.has(sig)) groups.set(sig, []);
+        groups.get(sig).push(k);
+    }
+    for (const group of groups.values()) {
+        if (group.length > 1) {
+            findings.push({
+                type: 'duplicates',
+                title: `Duplicate providers: ${group.join(', ')}`,
+                detail: 'Same token and URL. Keep one, delete the rest.',
+                providers: group,
+            });
+        }
+    }
+
+    // 2) invalid entries (empty token/url)
+    const invalid = keys.filter(k => {
+        const e = config[k] || {};
+        return typeof e.token !== 'string' || !e.token.trim() ||
+            typeof e.url !== 'string' || !e.url.trim();
+    });
+    if (invalid.length > 0) {
+        findings.push({
+            type: 'invalid',
+            title: `Invalid entries: ${invalid.join(', ')}`,
+            detail: 'Missing token or URL. Fix with "api edit" or re-import.',
+            providers: invalid,
+        });
+    }
+
+    // 3) malformed urls
+    const badUrl = keys.filter(k => {
+        const u = (config[k] && config[k].url) || '';
+        return u.trim() !== '' && !/^https?:\/\//i.test(u.trim());
+    });
+    if (badUrl.length > 0) {
+        findings.push({
+            type: 'bad-url',
+            title: `URLs not starting with http(s): ${badUrl.join(', ')}`,
+            detail: 'The BASE_URL should be a full http(s) URL.',
+            providers: badUrl,
+        });
+    }
+
+    // 4) fragile docker-bridge IP (changes on restart)
+    const dockerIp = keys.filter(k => String((config[k] && config[k].url) || '').includes('172.17.0.2'));
+    if (dockerIp.length > 0) {
+        findings.push({
+            type: 'docker-ip',
+            title: `Fragile docker-bridge IP in: ${dockerIp.join(', ')}`,
+            detail: '172.17.0.2 changes on restart — use http://localhost:PORT instead.',
+            providers: dockerIp,
+        });
+    }
+
+    // 5) shell points at credentials matching no stored provider
+    if (rcToken && keys.length > 0 && !keys.some(k => config[k] && config[k].token === rcToken)) {
+        findings.push({
+            type: 'active-missing',
+            title: 'Active shell credentials match no stored provider',
+            detail: 'Your rc file has a token that is not in the store. Activate one with "api use <name>".',
+            providers: [],
+        });
+    }
+
+    return findings;
+}
+
 // --- UI helpers -------------------------------------------------------------
 
 export function pageSizeFor(n, rows) {
