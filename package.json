@@ -1,0 +1,27 @@
+{
+  "name": "apimanager",
+  "version": "1.1.0",
+  "description": "Switch between Claude/Anthropic-compatible API providers from your terminal with a single command.",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "api-manager": "./bin/api-manager"
+  },
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "keywords": [
+    "anthropic",
+    "claude",
+    "api",
+    "provider",
+    "cli",
+    "endpoint",
+    "switcher"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "inquirer": "^9.3.8",
+    "inquirer-autocomplete-standalone": "^0.8.1"
+  }
+}

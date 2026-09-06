@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# api-manager launcher — installed under ~/.local/bin by install.sh
+exec node "$HOME/.local/share/api-manager/src/index.js" "$@"
